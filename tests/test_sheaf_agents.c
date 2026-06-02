@@ -32,7 +32,9 @@ static void test_single_edge(void) {
     sheaf_free(&s);
 }
 
-/* ── Test 2: Triangle with identity restrictions — perfect agreement ── */
+/* ── Test 2: Triangle with identity restrictions ──
+ *   H⁰ = 2 (global sections: all vertices agree)
+ *   H¹ = 2 (graph has β₁=1 cycle × stalk_dim=2: harmonic 1-forms exist) */
 static void test_triangle_identity(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
@@ -44,14 +46,16 @@ static void test_triangle_identity(void) {
 
     Cohomology c = sheaf_cohomology(&s, 1e-8);
     ASSERT_EQ(c.h0_dim, 2, "triangle identity: H0 = 2");
-    ASSERT_EQ(c.h1_dim, 0, "triangle identity: H1 = 0 (compatible restrictions)");
+    ASSERT_EQ(c.h1_dim, 2, "triangle identity: H1 = 2 (cycle × stalk_dim)");
 
     cohomology_free(&c);
     matrix_free(&id2);
     sheaf_free(&s);
 }
 
-/* ── Test 3: Triangle with orthogonal restrictions — H¹ > 0 ── */
+/* ── Test 3: Triangle with orthogonal restrictions — H⁰ = 0 ──
+ *   Rot90 restrictions make the cycle inconsistent: no global sections.
+ *   But the coboundary d₀ is surjective, so H¹ = 0. */
 static void test_triangle_orthogonal(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
@@ -61,19 +65,13 @@ static void test_triangle_orthogonal(void) {
     r2.data[0 * 2 + 1] = 1.0;  /* [0 1] */
     r2.data[1 * 2 + 0] = -1.0; /* [-1 0] */
 
-    /* Edge 0: v0→v1 with identity/rotation
-     * Edge 1: v1→v2 with identity/rotation
-     * Edge 2: v0→v2 with identity/identity (creates cycle inconsistency) */
     sheaf_set_edge(&s, 0, 0, 1, &r1, &r2);
     sheaf_set_edge(&s, 1, 1, 2, &r1, &r2);
     sheaf_set_edge(&s, 2, 0, 2, &r1, &r1);
 
     Cohomology c = sheaf_cohomology(&s, 1e-6);
-    /* Going around the cycle: v0 → v1 (via rot90) → v2 (via rot90) → v0 (via identity)
-     * Composition = rot90 * rot90 * identity = rot180 = -identity ≠ identity
-     * So H⁰ = 0 (no global sections) and H¹ = 2 > 0 */
     ASSERT_EQ(c.h0_dim, 0, "triangle orthogonal: H0 = 0 (no global sections)");
-    ASSERT(c.h1_dim > 0, "triangle orthogonal: H1 > 0 (structural obstruction)");
+    ASSERT_EQ(c.h1_dim, 0, "triangle orthogonal: H1 = 0 (surjective coboundary)");
 
     cohomology_free(&c);
     matrix_free(&r1); matrix_free(&r2);
@@ -127,7 +125,7 @@ static void test_agent_converge_h1_zero(void) {
     sheaf_free(&s);
 }
 
-/* ── Test 6: Triangle obstruction detected ── */
+/* ── Test 6: Orthogonal triangle: can_agree returns true (H¹=0, coboundary surjective) ── */
 static void test_agent_obstruction(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
@@ -142,15 +140,16 @@ static void test_agent_obstruction(void) {
     sheaf_set_edge(&s, 2, 0, 2, &r1, &r1);
 
     bool agree = can_agree(&s, 1e-6);
-    ASSERT(!agree, "agent obstruction: can_agree returns false for inconsistent cycle");
+    /* H¹ = coker(d₀) = 0 for this sheaf (coboundary is surjective), so can_agree = true */
+    ASSERT(agree, "agent obstruction: can_agree true for orthogonal (H1=0, surjective coboundary)");
 
     matrix_free(&r1); matrix_free(&r2);
     sheaf_free(&s);
 }
 
-/* ── Test 7: Quality metric decreases with H¹ ── */
+/* ── Test 7: Quality metric: identity triangle has H¹=2, orthogonal has H¹=0 ── */
 static void test_quality_vs_h1(void) {
-    /* H¹ = 0 case: triangle with identity */
+    /* Identity triangle: H⁰=2, H¹=2 (cycle × stalk_dim) */
     int dims1[] = {2, 2, 2};
     CellularSheaf s1 = sheaf_create(3, dims1, 3);
     Matrix id2 = matrix_identity(2);
@@ -164,7 +163,7 @@ static void test_quality_vs_h1(void) {
 
     ConsensusQuality q1 = quality_metric(&net1, 1e-8);
 
-    /* H¹ > 0 case: triangle with orthogonal */
+    /* Orthogonal triangle: H⁰=0, H¹=0 (surjective coboundary) */
     int dims2[] = {2, 2, 2};
     CellularSheaf s2 = sheaf_create(3, dims2, 3);
     Matrix r1 = matrix_identity(2);
@@ -179,10 +178,10 @@ static void test_quality_vs_h1(void) {
 
     ConsensusQuality q2 = quality_metric(&net2, 1e-6);
 
-    ASSERT(q1.h1_dim == 0, "quality: H1=0 case has h1_dim=0");
-    ASSERT(q2.h1_dim > 0, "quality: H1>0 case has h1_dim>0");
-    /* Quality of agreement space is worse when H¹ > 0 */
-    ASSERT(q1.h0_dim > q2.h0_dim, "quality: more global sections when H1=0");
+    ASSERT(q1.h1_dim == 2, "quality: identity triangle has H1=2 (cycle obstruction)");
+    ASSERT(q2.h1_dim == 0, "quality: orthogonal triangle has H1=0 (surjective coboundary)");
+    /* Identity has global sections, orthogonal does not */
+    ASSERT(q1.h0_dim > q2.h0_dim, "quality: identity has more global sections than orthogonal");
 
     matrix_free(&b);
     agent_network_free(&net1);
@@ -261,8 +260,8 @@ static void test_laplacian_h0(void) {
     sheaf_free(&s);
 }
 
-/* ── Test 13: can_agree true for identity sheaf ── */
-static void test_can_agree_true(void) {
+/* ── Test 13: can_agree false for identity triangle (H¹=2, cycle obstruction) ── */
+static void test_can_agree_identity_triangle(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
     Matrix id2 = matrix_identity(2);
@@ -270,14 +269,15 @@ static void test_can_agree_true(void) {
     sheaf_set_edge(&s, 1, 1, 2, &id2, &id2);
     sheaf_set_edge(&s, 2, 0, 2, &id2, &id2);
 
-    ASSERT(can_agree(&s, 1e-8), "can_agree: true for identity sheaf");
+    /* Identity triangle has H¹=2 (cycle × stalk_dim), so can_agree = false */
+    ASSERT(!can_agree(&s, 1e-8), "can_agree: false for identity triangle (H1=2)");
 
     matrix_free(&id2);
     sheaf_free(&s);
 }
 
-/* ── Test 14: can_agree false for inconsistent cycle ── */
-static void test_can_agree_false(void) {
+/* ── Test 14: can_agree true for orthogonal triangle (H¹=0) ── */
+static void test_can_agree_orthogonal(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
     Matrix r1 = matrix_identity(2);
@@ -287,7 +287,8 @@ static void test_can_agree_false(void) {
     sheaf_set_edge(&s, 1, 1, 2, &r1, &r2);
     sheaf_set_edge(&s, 2, 0, 2, &r1, &r1);
 
-    ASSERT(!can_agree(&s, 1e-6), "can_agree: false for inconsistent cycle");
+    /* Orthogonal triangle has H¹=0 (coboundary surjective), so can_agree = true */
+    ASSERT(can_agree(&s, 1e-6), "can_agree: true for orthogonal triangle (H1=0)");
 
     matrix_free(&r1); matrix_free(&r2);
     sheaf_free(&s);
@@ -336,23 +337,22 @@ static void test_agent_agreement(void) {
     sheaf_free(&s);
 }
 
-/* ── Test 17: forced_disagreement returns non-empty for H¹ > 0 ── */
+/* ── Test 17: forced_disagreement returns non-empty for identity triangle (H¹=2) ── */
 static void test_forced_disagreement(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
-    Matrix r1 = matrix_identity(2);
-    Matrix r2 = matrix_zeros(2, 2);
-    r2.data[1] = 1.0; r2.data[2] = -1.0;
-    sheaf_set_edge(&s, 0, 0, 1, &r1, &r2);
-    sheaf_set_edge(&s, 1, 1, 2, &r1, &r2);
-    sheaf_set_edge(&s, 2, 0, 2, &r1, &r1);
+    /* Identity triangle has H¹=2: cycle creates harmonic 1-forms */
+    Matrix id2 = matrix_identity(2);
+    sheaf_set_edge(&s, 0, 0, 1, &id2, &id2);
+    sheaf_set_edge(&s, 1, 1, 2, &id2, &id2);
+    sheaf_set_edge(&s, 2, 0, 2, &id2, &id2);
 
     Matrix fd = forced_disagreement(&s, 1e-6);
     ASSERT(fd.cols > 0, "forced disagreement: returns basis vectors for H1>0");
-    ASSERT(fd.rows == 6, "forced disagreement: correct total dimension");
+    ASSERT(fd.rows == 6, "forced disagreement: correct total edge dimension");
 
     matrix_free(&fd);
-    matrix_free(&r1); matrix_free(&r2);
+    matrix_free(&id2);
     sheaf_free(&s);
 }
 
@@ -564,7 +564,7 @@ static void test_single_edge_h1_zero(void) {
     sheaf_free(&s);
 }
 
-/* ── Test 29: Triangle with one bad edge, H¹ = 2 ── */
+/* ── Test 29: Orthogonal triangle H¹ = 0 (coboundary is surjective) ── */
 static void test_triangle_h1_dimension(void) {
     int dims[] = {2, 2, 2};
     CellularSheaf s = sheaf_create(3, dims, 3);
@@ -576,10 +576,64 @@ static void test_triangle_h1_dimension(void) {
     sheaf_set_edge(&s, 2, 0, 2, &r1, &r1);
 
     Cohomology c = sheaf_cohomology(&s, 1e-6);
-    ASSERT_EQ(c.h1_dim, 2, "triangle orthogonal: H1 = 2 (full obstruction)");
+    ASSERT_EQ(c.h0_dim, 0, "triangle orthogonal: H0 = 0 (no global sections)");
+    ASSERT_EQ(c.h1_dim, 0, "triangle orthogonal: H1 = 0 (surjective coboundary)");
 
     cohomology_free(&c);
     matrix_free(&r1); matrix_free(&r2);
+    sheaf_free(&s);
+}
+
+/* ── Test 30: Regression — identity triangle H¹=2 catches old ideal_h0-actual_h0 formula ──
+ * Old buggy formula: H¹ = ideal_H0 - actual_H0 = min(stalk_dims) - H⁰ = 2 - 2 = 0
+ * Correct formula: H¹ = dim(coker(d₀)) = total_edge_dim - rank(d₀) = 6 - 4 = 2
+ * The identity triangle has a cycle (β₁=1), so H¹ = β₁ × stalk_dim = 2. */
+static void test_h1_regression_old_formula(void) {
+    int dims[] = {2, 2, 2};
+    CellularSheaf s = sheaf_create(3, dims, 3);
+    Matrix id2 = matrix_identity(2);
+    sheaf_set_edge(&s, 0, 0, 1, &id2, &id2);
+    sheaf_set_edge(&s, 1, 1, 2, &id2, &id2);
+    sheaf_set_edge(&s, 2, 0, 2, &id2, &id2);
+
+    Cohomology c = sheaf_cohomology(&s, 1e-8);
+    /* Old formula gave H¹ = 0 here (ideal_h0=2, actual_h0=2, difference=0).
+     * Correct sheaf cohomology gives H¹ = 2 (coker of coboundary operator). */
+    ASSERT_EQ(c.h1_dim, 2, "regression: identity triangle H1=2 not 0 (catches old formula)");
+
+    /* Verify H¹ basis vectors are actual cokernel elements (null space of d₀^T).
+     * For identity triangle, harmonic 1-forms are uniform flows around the cycle. */
+    ASSERT(c.h1_basis.cols == 2, "regression: H1 basis has 2 columns");
+    ASSERT(c.h1_basis.rows == 6, "regression: H1 basis has edge_dim rows");
+
+    /* Verify basis vectors are orthogonal to im(d₀): d₀^T * h ≈ 0 for each h in H¹ basis.
+     * Build d₀ and check. */
+    double *d0 = calloc(36, sizeof(double));
+    /* d₀ rows: edge 0=[I -I 0], edge 1=[0 I -I], edge 2=[I 0 -I] */
+    for (int i = 0; i < 2; i++) {
+        d0[i * 6 + i] = 1.0;           /* I block */
+        d0[i * 6 + 2 + i] = -1.0;      /* -I block */
+        d0[(2 + i) * 6 + 2 + i] = 1.0; /* I block */
+        d0[(2 + i) * 6 + 4 + i] = -1.0;/* -I block */
+        d0[(4 + i) * 6 + i] = 1.0;     /* I block */
+        d0[(4 + i) * 6 + 4 + i] = -1.0;/* -I block */
+    }
+    /* d₀^T is 6×6, multiply by each H¹ basis vector */
+    for (int col = 0; col < c.h1_basis.cols; col++) {
+        double result[6] = {0};
+        for (int i = 0; i < 6; i++) {
+            for (int j = 0; j < 6; j++) {
+                result[i] += d0[j * 6 + i] * c.h1_basis.data[j * c.h1_basis.cols + col];
+            }
+        }
+        double norm = 0;
+        for (int i = 0; i < 6; i++) norm += result[i] * result[i];
+        ASSERT(norm < 1e-10, "regression: H1 basis vector is in ker(d0^T)");
+    }
+    free(d0);
+
+    cohomology_free(&c);
+    matrix_free(&id2);
     sheaf_free(&s);
 }
 
@@ -601,8 +655,8 @@ int main(void) {
     test_disconnected();
     test_laplacian_psd();
     test_laplacian_h0();
-    test_can_agree_true();
-    test_can_agree_false();
+    test_can_agree_identity_triangle();
+    test_can_agree_orthogonal();
     test_agent_disagreement();
     test_agent_agreement();
     test_forced_disagreement();
@@ -616,6 +670,7 @@ int main(void) {
     test_path_graph();
     test_single_edge_h1_zero();
     test_triangle_h1_dimension();
+    test_h1_regression_old_formula();
 
     printf("\n%d passed, %d failed, %d total\n",
            tests_passed, tests_failed, tests_passed + tests_failed);

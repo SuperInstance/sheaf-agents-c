@@ -287,10 +287,15 @@ Cohomology sheaf_cohomology(const CellularSheaf *s, double tol) {
     Cohomology c;
     memset(&c, 0, sizeof(c));
 
-    int total_dim = 0;
-    for (int v = 0; v < s->n_verts; v++) total_dim += s->stalk_dims[v];
+    int total_vertex_dim = 0;
+    for (int v = 0; v < s->n_verts; v++) total_vertex_dim += s->stalk_dims[v];
 
-    if (total_dim == 0) {
+    int total_edge_dim = 0;
+    for (int e = 0; e < s->n_edges; e++)
+        total_edge_dim += s->edges[e].restriction.rows;
+
+    /* Trivial case: empty sheaf */
+    if (total_vertex_dim == 0 && total_edge_dim == 0) {
         c.h0_dim = 0;
         c.h1_dim = 0;
         c.h0_basis = matrix_zeros(0, 0);
@@ -298,83 +303,90 @@ Cohomology sheaf_cohomology(const CellularSheaf *s, double tol) {
         return c;
     }
 
-    Matrix L = sheaf_laplacian(s);
-
-    /* H⁰ = null space of L (global sections) */
-    int h0;
-    if (total_dim == 0) {
-        h0 = 0;
-        c.h0_basis = matrix_zeros(0, 0);
-    } else {
-        double *null_data = malloc((size_t)total_dim * total_dim * sizeof(double));
-        h0 = total_dim - compute_null_space(L.data, total_dim, total_dim, null_data, tol);
-        c.h0_basis = matrix_alloc(total_dim, h0 > 0 ? h0 : 1);
-        if (h0 > 0) {
-            memcpy(c.h0_basis.data, null_data, (size_t)total_dim * h0 * sizeof(double));
-        }
-        free(null_data);
+    /* No edges: H⁰ = full vertex stalk space, H¹ = 0 */
+    if (s->n_edges == 0) {
+        c.h0_dim = total_vertex_dim;
+        c.h0_basis = (total_vertex_dim > 0) ? matrix_identity(total_vertex_dim)
+                                             : matrix_zeros(0, 0);
+        c.h1_dim = 0;
+        c.h1_basis = matrix_zeros(0, 0);
+        return c;
     }
+
+    /* Build coboundary operator d₀: (total_edge_dim × total_vertex_dim)
+     * For each edge e=(v1,v2) with restriction maps r1 (v1→edge), r2 (v2→edge):
+     *   (d₀ s)_e = r1(s_{v1}) - r2(s_{v2})
+     * H⁰ = ker(d₀)  (global sections)
+     * H¹ = coker(d₀) = C¹/im(d₀)  (obstructions) */
+    double *d0 = calloc((size_t)total_edge_dim * total_vertex_dim, sizeof(double));
+
+    int edge_off = 0;
+    for (int e = 0; e < s->n_edges; e++) {
+        SheafEdge *edge = &s->edges[e];
+        int v1 = edge->v1, v2 = edge->v2;
+        int de = edge->restriction.rows;
+        int d1 = edge->restriction.cols;
+        int d2 = edge->restriction_t.cols;
+
+        int off1 = 0, off2 = 0;
+        for (int v = 0; v < v1; v++) off1 += s->stalk_dims[v];
+        for (int v = 0; v < v2; v++) off2 += s->stalk_dims[v];
+
+        /* Place +r1 block */
+        for (int i = 0; i < de; i++)
+            for (int j = 0; j < d1; j++)
+                d0[(edge_off + i) * total_vertex_dim + (off1 + j)]
+                    += edge->restriction.data[i * d1 + j];
+
+        /* Place -r2 block */
+        for (int i = 0; i < de; i++)
+            for (int j = 0; j < d2; j++)
+                d0[(edge_off + i) * total_vertex_dim + (off2 + j)]
+                    -= edge->restriction_t.data[i * d2 + j];
+
+        edge_off += de;
+    }
+
+    /* H⁰ = ker(d₀): null space of d₀ */
+    double *h0_data = calloc((size_t)total_vertex_dim * total_vertex_dim, sizeof(double));
+    int rank_d0 = compute_null_space(d0, total_edge_dim, total_vertex_dim,
+                                     h0_data, tol);
+    int h0 = total_vertex_dim - rank_d0;
+
     c.h0_dim = h0;
-
-    /* H¹ = ideal_h0 - actual_h0
-     * Ideal H⁰ for each connected component = min stalk dimension in that component.
-     * This represents the maximum possible agreement for compatible restrictions. */
-    int nc;
-    int *comp = find_components(s->n_verts, s->n_edges, s->edges, &nc);
-
-    /* Find unique component roots */
-    int *comp_roots = malloc((size_t)s->n_verts * sizeof(int));
-    int n_unique = 0;
-    for (int i = 0; i < s->n_verts; i++) {
-        bool found = false;
-        for (int j = 0; j < n_unique; j++) {
-            if (comp[i] == comp_roots[j]) { found = true; break; }
-        }
-        if (!found) comp_roots[n_unique++] = comp[i];
+    if (h0 > 0) {
+        c.h0_basis = matrix_alloc(total_vertex_dim, h0);
+        memcpy(c.h0_basis.data, h0_data, (size_t)total_vertex_dim * h0 * sizeof(double));
+    } else {
+        c.h0_basis = matrix_zeros(total_vertex_dim, 0);
     }
+    free(h0_data);
 
-    int ideal_h0 = 0;
-    for (int ci = 0; ci < n_unique; ci++) {
-        int cd = 0;
-        bool first = true;
-        for (int v = 0; v < s->n_verts; v++) {
-            if (comp[v] == comp_roots[ci]) {
-                if (first) { cd = s->stalk_dims[v]; first = false; }
-                else if (s->stalk_dims[v] < cd) cd = s->stalk_dims[v];
-            }
-        }
-        ideal_h0 += cd;
-    }
+    /* H¹ = coker(d₀): null space of d₀^T
+     * d₀^T is (total_vertex_dim × total_edge_dim)
+     * Elements of ker(d₀^T) are 1-cochains orthogonal to im(d₀) */
+    double *d0T = calloc((size_t)total_vertex_dim * total_edge_dim, sizeof(double));
+    for (int i = 0; i < total_edge_dim; i++)
+        for (int j = 0; j < total_vertex_dim; j++)
+            d0T[j * total_edge_dim + i] = d0[i * total_vertex_dim + j];
 
-    int h1 = ideal_h0 - h0;
-    if (h1 < 0) h1 = 0;
-
-    free(comp_roots);
-    free(comp);
+    double *h1_data = calloc((size_t)total_edge_dim * total_edge_dim, sizeof(double));
+    int rank_d0T = compute_null_space(d0T, total_vertex_dim, total_edge_dim,
+                                      h1_data, tol);
+    int h1 = total_edge_dim - rank_d0T;
 
     c.h1_dim = h1;
-
-    /* H¹ basis: use eigenvectors corresponding to smallest non-zero eigenvalues.
-     * Since we don't have eigenvalues, compute null space of L shifted by smallest eigenvalue.
-     * Simpler: just provide placeholder basis of dimension h1. */
     if (h1 > 0) {
-        c.h1_basis = matrix_zeros(total_dim, h1);
-        /* Fill with unit vectors in the orthogonal complement direction */
-        int col = 0;
-        int off = 0;
-        for (int v = 0; v < s->n_verts && col < h1; v++) {
-            int d = s->stalk_dims[v];
-            for (int i = 0; i < d && col < h1; i++) {
-                c.h1_basis.data[(off + i) * h1 + col] = 1.0;
-                col++;
-            }
-            off += d;
-        }
+        c.h1_basis = matrix_alloc(total_edge_dim, h1);
+        memcpy(c.h1_basis.data, h1_data, (size_t)total_edge_dim * h1 * sizeof(double));
     } else {
         c.h1_basis = matrix_zeros(0, 0);
     }
 
-    matrix_free(&L);
+    free(h1_data);
+    free(d0T);
+    free(d0);
+
     return c;
 }
 
